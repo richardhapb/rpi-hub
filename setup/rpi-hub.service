@@ -4,6 +4,10 @@ Description=rpi-hub: wired keyboard bridged to a Mac over Bluetooth HID
 After=bluetooth.service
 Requires=bluetooth.service
 
+# Don't let a boot-time race against USB enumeration burn the restart budget:
+# the by-id symlinks appear a moment after the kernel sees the keyboard.
+StartLimitIntervalSec=0
+
 [Service]
 Type=simple
 
@@ -21,10 +25,6 @@ ExecStart=/usr/local/bin/rpi-hub \
 # come back up.
 Restart=always
 RestartSec=2
-
-# Don't let a boot-time race against USB enumeration burn the restart budget:
-# the by-id symlinks appear a moment after the kernel sees the keyboard.
-StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
