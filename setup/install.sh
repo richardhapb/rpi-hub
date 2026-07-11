@@ -48,7 +48,7 @@ sudo -u "$REPO_USER" bash -lc "cd '$REPO' && cargo build --release"
 install -m 755 "$REPO/target/release/rpi-hub" /usr/local/bin/rpi-hub
 
 echo "==> installing service"
-install -m 644 setup/rpi-hub.service /etc/systemd/system/rpi-hub.service
+install -m 644 "$REPO/setup/rpi-hub.service" /etc/systemd/system/rpi-hub.service
 
 systemctl daemon-reload
 systemctl restart bluetooth
