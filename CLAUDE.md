@@ -373,6 +373,20 @@ journalctl -u rpi-hub -f
 * **A stale bond on the Mac** makes pairing appear to succeed while the Pi sees
   nothing. Forget the device on the Mac side too.
 * **Don't forward evdev autorepeat.** See 2.4.
+* **Losing the keyboard must be fatal.** Unplugging it (or a USB reset) kills the
+  evdev fds with `ENODEV`; the reader tasks exit and the key channel closes *for
+  good*. Nothing in-process reopens them, and the nodes that come back on replug
+  are new ones with new `eventN` numbers. `pump` therefore distinguishes
+  `PumpEnd::InputGone` from `PumpEnd::HostGone` and **exits** on the former, so
+  systemd restarts us onto the new nodes. Treating it as a lost *link* -- which is
+  what the first version did -- means every later `pump` returns instantly and the
+  process hot-spins on reconnect forever, while never exiting, so `Restart=always`
+  never fires. It ran like that for 50 minutes on 2026-07-11.
+* **Only ever dial hosts pinned with `--host`.** The Pi's *paired* list is a junk
+  drawer -- iPhone, BSBA-02 speaker, HY300Pro projector -- and dialling all of it
+  is not merely noisy: **the iPhone accepts both L2CAP channels**, so it wins the
+  race against the Mac and swallows the keyboard. The unit pins
+  `--host A8:8F:D9:2F:A1:67`.
 
 ---
 
