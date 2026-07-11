@@ -374,10 +374,10 @@ mod tests {
         // A duplicate in the table would make two physical keys indistinguishable.
         let mut seen = std::collections::HashMap::new();
         for code in 0u16..256 {
-            if let Mapped::Key(u) = map(code, ModifierLayout::default()) {
-                if let Some(prev) = seen.insert(u, code) {
-                    panic!("usage {u:#04x} claimed by evdev {prev} and {code}");
-                }
+            if let Mapped::Key(u) = map(code, ModifierLayout::default())
+                && let Some(prev) = seen.insert(u, code)
+            {
+                panic!("usage {u:#04x} claimed by evdev {prev} and {code}");
             }
         }
     }
