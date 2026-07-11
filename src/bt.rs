@@ -175,8 +175,23 @@ impl HidPeripheral {
         Ok(Self { adapter, ctrl, intr, _profile: profile })
     }
 
-    pub fn adapter(&self) -> &Adapter {
-        &self.adapter
+    /// Hosts we are already bonded with, so we know who to dial on startup.
+    ///
+    /// Also marks them trusted: an untrusted device makes BlueZ ask an agent for
+    /// authorisation on every reconnect, and we run headless with no agent to
+    /// ask.
+    pub async fn known_hosts(&self) -> Result<Vec<bluer::Address>> {
+        let mut hosts = Vec::new();
+        for addr in self.adapter.device_addresses().await? {
+            let device = self.adapter.device(addr)?;
+            if device.is_paired().await.unwrap_or(false) {
+                if !device.is_trusted().await.unwrap_or(false) {
+                    device.set_trusted(true).await.ok();
+                }
+                hosts.push(addr);
+            }
+        }
+        Ok(hosts)
     }
 
     /// Wait for a host to open both HID channels.
