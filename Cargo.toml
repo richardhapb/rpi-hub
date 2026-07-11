@@ -4,3 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+
+# The Bluetooth and evdev halves only exist on the Pi. Keeping them off the macOS
+# build lets `cargo test` exercise the keymap and report logic during development
+# without a cross-compile.
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17", features = ["bluetoothd", "l2cap", "rfcomm"] }
+evdev = { version = "0.13", features = ["tokio"] }
+uuid = "1"
