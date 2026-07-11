@@ -41,9 +41,11 @@ sed -i 's/^#\?Class = .*/Class = 0x002540/' /etc/bluetooth/main.conf
 grep -q '^Class =' /etc/bluetooth/main.conf || sed -i '/^\[General\]/a Class = 0x002540' /etc/bluetooth/main.conf
 
 echo "==> building"
-cd "$REPO"
-cargo build --release
-install -m 755 target/release/rpi-hub /usr/local/bin/rpi-hub
+# Build as whoever owns the checkout, not as root: git refuses to operate on a
+# repo it does not own, and root has no reason to be writing into ~/.cargo.
+REPO_USER="$(stat -c %U "$REPO")"
+sudo -u "$REPO_USER" bash -lc "cd '$REPO' && cargo build --release"
+install -m 755 "$REPO/target/release/rpi-hub" /usr/local/bin/rpi-hub
 
 echo "==> installing service"
 install -m 644 setup/rpi-hub.service /etc/systemd/system/rpi-hub.service
