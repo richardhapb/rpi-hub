@@ -36,6 +36,19 @@ struct Args {
     #[arg(long, default_value = "rpi-hub Keyboard")]
     alias: String,
 
+    /// Bluetooth address of a host to dial on reconnect, e.g. A8:8F:D9:2F:A1:67.
+    ///
+    /// Only these addresses are ever dialled. Pass it more than once for more
+    /// than one host; with none given we never knock, and only wait for a host
+    /// to open the channels.
+    ///
+    /// It is deliberately not "every paired device": a Pi accumulates pairings
+    /// for speakers, phones and projectors, and at least an iPhone will happily
+    /// accept both L2CAP channels -- taking the keyboard hostage on a link the
+    /// Mac can never win.
+    #[arg(long = "host")]
+    hosts: Vec<bluer::Address>,
+
     /// Log every key event read and every report sent.
     #[arg(short, long)]
     verbose: bool,
@@ -45,6 +58,20 @@ struct Args {
 struct KeyEvent {
     code: u16,
     pressed: bool,
+}
+
+/// Why the pump stopped. The two cases look alike and are not alike at all.
+enum PumpEnd {
+    /// The host's L2CAP link broke: it slept, wandered out of range, or was
+    /// disconnected. Recoverable -- wait for it to come back.
+    HostGone(anyhow::Error),
+
+    /// Every keyboard node stopped reading, which in practice means the keyboard
+    /// was unplugged or the USB port reset it. Fatal: the evdev file descriptors
+    /// we hold are dead, and nothing in this process reopens them. The device
+    /// nodes that come back on replug are *new* nodes (and often new eventN
+    /// numbers), so the only honest move is to exit and be restarted onto them.
+    InputGone,
 }
 
 pub async fn run() -> Result<()> {
@@ -108,10 +135,20 @@ pub async fn run() -> Result<()> {
         .context("bringing up the Bluetooth HID peripheral")?;
     println!("advertising as '{}' -- pair from the Mac", args.alias);
 
+    // An untrusted device makes BlueZ ask an agent for authorisation on every
+    // reconnect, and we run headless with nobody to ask.
+    for &host in &args.hosts {
+        peripheral.trust(host).await?;
+        println!("will dial {host} on reconnect");
+    }
+    if args.hosts.is_empty() {
+        println!("no --host pinned -- waiting for the host to connect to us");
+    }
+
     let mut state = KeyboardState::new(layout);
 
     loop {
-        let link = wait_for_host(&peripheral).await?;
+        let link = wait_for_host(&peripheral, &args.hosts).await?;
         println!("host connected: {}", link.peer());
 
         // A fresh link starts with nothing held. If the previous link died
@@ -120,9 +157,7 @@ pub async fn run() -> Result<()> {
         state.release_all();
         link.send(&state.wire_report()).await.ok();
 
-        if let Err(e) = pump(&mut rx, &link, &mut state, args.verbose).await {
-            eprintln!("link to {} lost: {e}", link.peer());
-        }
+        let end = pump(&mut rx, &link, &mut state, args.verbose).await;
 
         // Tell the host to let go of everything before the channel disappears.
         // Best-effort: if the link is already gone this send fails, and that is
@@ -130,7 +165,21 @@ pub async fn run() -> Result<()> {
         if state.release_all() {
             link.send(&state.wire_report()).await.ok();
         }
-        println!("host disconnected; waiting for reconnect");
+
+        match end {
+            // Losing the keyboard is not "the host went away", and looping back
+            // to wait for a host would spin forever against a dead channel:
+            // every future pump returns instantly, and we would hammer the radio
+            // reconnecting to a host we have nothing to say to. Exit instead --
+            // systemd restarts us, and the restart reopens the device nodes.
+            PumpEnd::InputGone => {
+                anyhow::bail!("all keyboard devices went away (unplugged?) -- exiting to be restarted onto the new device nodes")
+            }
+            PumpEnd::HostGone(e) => {
+                eprintln!("link to {} lost: {e}", link.peer());
+                println!("host disconnected; waiting for reconnect");
+            }
+        }
     }
 }
 
@@ -141,16 +190,14 @@ pub async fn run() -> Result<()> {
 /// the Mac generally does *not* reconnect on its own -- a real keyboard is
 /// expected to announce itself -- so waiting passively would leave a keyboard
 /// that only works if you go and click Connect. Race both.
-async fn wait_for_host(peripheral: &HidPeripheral) -> Result<HidLink> {
-    let known = peripheral.known_hosts().await.unwrap_or_default();
-    if known.is_empty() {
-        println!("no bonded host yet -- pair from the Mac");
+async fn wait_for_host(peripheral: &HidPeripheral, hosts: &[bluer::Address]) -> Result<HidLink> {
+    if hosts.is_empty() {
         return peripheral.accept().await;
     }
 
     tokio::select! {
         incoming = peripheral.accept() => incoming,
-        dialled = dial_any(peripheral, &known) => dialled,
+        dialled = dial_any(peripheral, hosts) => dialled,
     }
 }
 
@@ -172,13 +219,13 @@ async fn dial_any(peripheral: &HidPeripheral, hosts: &[bluer::Address]) -> Resul
     }
 }
 
-/// Forward key events to the host until the link breaks.
+/// Forward key events to the host until the link breaks or the keyboard does.
 async fn pump(
     rx: &mut mpsc::Receiver<KeyEvent>,
     link: &HidLink,
     state: &mut KeyboardState,
     verbose: bool,
-) -> Result<()> {
+) -> PumpEnd {
     while let Some(ev) = rx.recv().await {
         // `apply` returns false for events that do not change what the host can
         // see -- a repeated press of a held key, an unmapped key. Staying quiet
@@ -191,8 +238,12 @@ async fn pump(
             eprintln!("evdev {:>3} {action} -> {report:02x?}{note}", ev.code);
         }
         if changed {
-            link.send(&state.wire_report()).await?;
+            if let Err(e) = link.send(&state.wire_report()).await {
+                return PumpEnd::HostGone(e);
+            }
         }
     }
-    anyhow::bail!("all keyboard devices went away");
+    // The channel closes only when every reader task has exited, i.e. every
+    // keyboard node stopped reading. That is the keyboard, not the host.
+    PumpEnd::InputGone
 }

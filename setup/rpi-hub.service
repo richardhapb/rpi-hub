@@ -16,13 +16,23 @@ Type=simple
 User=root
 SupplementaryGroups=input
 
+# --host pins the one machine we dial on reconnect ("MacBook Air de Richard").
+# Without it we would knock on every *paired* device, and the Pi's paired list
+# also holds an iPhone, a speaker and a projector -- the iPhone accepts both
+# L2CAP channels, so it wins the race and swallows the keyboard.
 ExecStart=/usr/local/bin/rpi-hub \
   --device /dev/input/by-id/usb-SINO_WEALTH_Gaming_Keyboard-event-kbd \
-  --device /dev/input/by-id/usb-SINO_WEALTH_Gaming_Keyboard-event-if01
+  --device /dev/input/by-id/usb-SINO_WEALTH_Gaming_Keyboard-event-if01 \
+  --host A8:8F:D9:2F:A1:67
 
 # The keyboard is grabbed exclusively. If this process dies without ungrabbing,
 # the keyboard is dead on the Pi too and SSH is the only way back in -- so always
 # come back up.
+#
+# This is also the recovery path for a keyboard being unplugged: the process
+# exits on purpose when its evdev nodes die, and the restart reopens whatever
+# nodes came back (the eventN numbers change across a replug). StartLimitIntervalSec=0
+# above is what keeps a long unplug from exhausting the restart budget.
 Restart=always
 RestartSec=2
 

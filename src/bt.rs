@@ -175,23 +175,27 @@ impl HidPeripheral {
         Ok(Self { adapter, ctrl, intr, _profile: profile })
     }
 
-    /// Hosts we are already bonded with, so we know who to dial on startup.
+    /// Mark a host trusted, so BlueZ stops asking about it.
     ///
-    /// Also marks them trusted: an untrusted device makes BlueZ ask an agent for
-    /// authorisation on every reconnect, and we run headless with no agent to
-    /// ask.
-    pub async fn known_hosts(&self) -> Result<Vec<bluer::Address>> {
-        let mut hosts = Vec::new();
-        for addr in self.adapter.device_addresses().await? {
-            let device = self.adapter.device(addr)?;
-            if device.is_paired().await.unwrap_or(false) {
-                if !device.is_trusted().await.unwrap_or(false) {
-                    device.set_trusted(true).await.ok();
-                }
-                hosts.push(addr);
-            }
+    /// An untrusted device makes BlueZ ask an agent for authorisation on every
+    /// reconnect, and we run headless with no agent to ask.
+    ///
+    /// This deliberately takes one address rather than enumerating what is
+    /// paired. The paired list on a Pi is a junk drawer -- speakers, phones,
+    /// projectors -- and trusting (let alone dialling) all of it is how the
+    /// keyboard ends up connected to a projector.
+    pub async fn trust(&self, peer: bluer::Address) -> Result<()> {
+        let device = self.adapter.device(peer)?;
+        if !device.is_paired().await.unwrap_or(false) {
+            // Not fatal: the host may simply not have paired yet, and it can
+            // still reach us by connecting inbound.
+            eprintln!("warning: {peer} is pinned with --host but is not paired yet");
+            return Ok(());
         }
-        Ok(hosts)
+        if !device.is_trusted().await.unwrap_or(false) {
+            device.set_trusted(true).await.context("marking the host trusted")?;
+        }
+        Ok(())
     }
 
     /// Wait for a host to open both HID channels.
