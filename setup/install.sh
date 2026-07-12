@@ -65,10 +65,15 @@ cat > /etc/wireplumber/wireplumber.conf.d/50-rpi-hub-no-bluez.conf <<'EOF'
 # registers HFP (UUIDs 111e/111f) with BlueZ as an external org.bluez.Profile1 --
 # which --noplugin cannot suppress, because it is not a bluetoothd plugin -- and
 # that alone puts the Audio+Telephony bits back into the Class-of-Device.
+# bluez-midi is a SEPARATE monitor in WirePlumber 0.5 -- disabling monitor.bluez
+# does not disable it, and it keeps the BLE MIDI service (03b80e5a) on the adapter.
+# That one is GATT, so unlike HFP it does not touch the BR/EDR Class-of-Device; it
+# is turned off for tidiness, not because it broke anything.
 wireplumber.profiles = {
   main = {
     monitor.bluez = disabled
     monitor.bluez.seat-monitoring = disabled
+    monitor.bluez-midi = disabled
   }
 }
 EOF
@@ -101,21 +106,27 @@ systemctl enable --now rpi-hub
 echo
 echo "==> done. Verifying what the adapter actually advertises:"
 # The UUID list is the check that matters -- main.conf's Class only sets the
-# major/minor bits, and BlueZ derives the service bits from these. Anything
-# audio-flavoured here (110a 110b 110c 110e 111e 111f 112d 03b8...) means a
-# plugin or an external Profile1 slipped through, and macOS will treat the Pi
-# as a speaker.
+# major/minor bits, and BlueZ derives the *service* bits from these UUIDs.
+#
+# Only the BR/EDR audio profiles are dangerous: they are what set the Audio and
+# Telephony service bits, and so what makes macOS file the Pi as a speaker. BLE
+# MIDI (03b80e5a) is GATT and does not touch the Class-of-Device at all, so it is
+# reported but not treated as a failure.
 uuids="$(busctl get-property org.bluez /org/bluez/hci0 org.bluez.Adapter1 UUIDs)"
-if grep -qE '0000(110a|110b|110c|110e|111e|111f|112d)|03b80e5a' <<<"$uuids"; then
-    echo "    WARNING: the adapter still advertises an audio profile:" >&2
-    grep -oE '"[0-9a-f]{8}-' <<<"$uuids" | tr -d '"-' | sort -u | tr '\n' ' ' >&2
+class="$(bluetoothctl show | awk '/Class/ {print $2}')"
+
+if grep -qE '0000(110a|110b|110c|110e|111e|111f|112d)-' <<<"$uuids"; then
+    echo "    WARNING: the adapter still advertises a BR/EDR audio profile:" >&2
+    grep -oE '0000(110a|110b|110c|110e|111e|111f|112d)-' <<<"$uuids" | tr -d - | sort -u | tr '\n' ' ' >&2
     echo >&2
     echo "    macOS will file this Pi as an audio device. See the header." >&2
+elif [[ "$class" != 0x0000* ]]; then
+    echo "    WARNING: class is $class -- a service bit is set that should not be." >&2
+    echo "    Something is registering a profile we did not account for. See the header." >&2
 else
-    echo "    no audio profiles advertised -- good"
+    echo "    class $class -- Peripheral/Keyboard, no audio or telephony bits. Good."
 fi
-echo -n "    class: "; bluetoothctl show | awk '/Class/ {print $2}'
-echo "    (want 0x002540; a different service byte means an audio UUID is back)"
+grep -q 03b80e5a <<<"$uuids" && echo "    (note: BLE MIDI still advertised -- harmless, GATT only)"
 echo
 echo "Pair 'rpi-hub Keyboard' from the Mac, then type."
 echo "Logs:    journalctl -u rpi-hub -f"
