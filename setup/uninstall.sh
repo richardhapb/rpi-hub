@@ -19,6 +19,16 @@ echo "==> restoring BlueZ"
 rm -f /etc/systemd/system/bluetooth.service.d/rpi-hub.conf
 rmdir --ignore-fail-on-non-empty /etc/systemd/system/bluetooth.service.d 2>/dev/null || true
 
+echo "==> giving PipeWire its Bluetooth back"
+# install.sh disabled WirePlumber's BlueZ monitor so it would stop registering HFP.
+# Leaving this in place would quietly break Bluetooth audio on a Pi that no longer
+# runs rpi-hub at all.
+rm -f /etc/wireplumber/wireplumber.conf.d/50-rpi-hub-no-bluez.conf
+rmdir --ignore-fail-on-non-empty /etc/wireplumber/wireplumber.conf.d /etc/wireplumber 2>/dev/null || true
+for u in $(loginctl list-users --no-legend | awk '$1 >= 1000 {print $2}'); do
+    systemctl --machine="$u@.host" --user restart wireplumber 2>/dev/null || true
+done
+
 if [[ -f "$BACKUP/main.conf.orig" ]]; then
     cp "$BACKUP/main.conf.orig" /etc/bluetooth/main.conf
     echo "    main.conf restored from $BACKUP"

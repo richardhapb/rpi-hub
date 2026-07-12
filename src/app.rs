@@ -136,7 +136,9 @@ pub async fn run() -> Result<()> {
     println!("advertising as '{}' -- pair from the Mac", args.alias);
 
     // An untrusted device makes BlueZ ask an agent for authorisation on every
-    // reconnect, and we run headless with nobody to ask.
+    // reconnect, and we run headless with nobody to ask. This pass only catches
+    // hosts that are *already* bonded; one that pairs later is trusted on connect
+    // (see the loop below), which is the case that actually bit us.
     for &host in &args.hosts {
         peripheral.trust(host).await?;
         println!("will dial {host} on reconnect");
@@ -150,6 +152,17 @@ pub async fn run() -> Result<()> {
     loop {
         let link = wait_for_host(&peripheral, &args.hosts).await?;
         println!("host connected: {}", link.peer());
+
+        // Trust it now, not at startup. A host that pairs *after* we boot -- which
+        // is every first pairing, and every re-pair after a bond is cleared -- is
+        // not paired when the loop above runs, so that pass skips it and it stays
+        // untrusted forever. BlueZ then asks an agent to authorise each reconnect,
+        // finds none (we are headless), and the link silently stops coming back.
+        // By the time we have a link the host is necessarily bonded, so this is the
+        // one place the trust can never be premature.
+        if let Err(e) = peripheral.trust(link.peer()).await {
+            eprintln!("warning: could not trust {}: {e}", link.peer());
+        }
 
         // A fresh link starts with nothing held. If the previous link died
         // mid-chord our state still says Command is down, and the Mac would
