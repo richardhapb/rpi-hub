@@ -310,13 +310,6 @@ media/extra keys to the Pi's console. We grab the first two:
 on replug -- `-event-kbd` moved from `event12` to `event5` *during a single
 development session*.
 
-### The Pi was previously a Bluetooth audio receiver
-
-Before this project the Pi was `rpi-audio`, CoD `0x200414` (Audio/Loudspeaker),
-with a `BSBA-02` speaker paired. **rpi-hub takes that role over** -- one adapter,
-one Class-of-Device. `setup/uninstall.sh` restores it; the original `main.conf` is
-backed up at `/root/rpi-hub-backup/main.conf.orig`.
-
 ### WiFi/Bluetooth share one radio
 
 `eth0` is DOWN; the Pi's only uplink is 2.4GHz WiFi, on the **same Broadcom combo
@@ -382,6 +375,47 @@ journalctl -u rpi-hub -f
   what the first version did -- means every later `pump` returns instantly and the
   process hot-spins on reconnect forever, while never exiting, so `Restart=always`
   never fires. It ran like that for 50 minutes on 2026-07-11.
+* **`Class` in `main.conf` does NOT decide the Class-of-Device.** It sets only the
+  major/minor bits. BlueZ **recomputes the service bits from the profile UUIDs
+  registered on the adapter**, so every plugin that registers an audio profile puts
+  the Audio/Telephony bits straight back and `main.conf` is powerless. Sources, and
+  all of them had to go:
+
+  | source | UUID | how to kill it |
+  |---|---|---|
+  | `a2dp` plugin | `110a`/`110b` | `bluetoothd --noplugin=` |
+  | `avrcp` plugin | `110c`/`110e` | `bluetoothd --noplugin=` |
+  | `sap` plugin | `112d` (sets Telephony) | `bluetoothd --noplugin=` |
+  | `midi` plugin | `03b80e5a` | `bluetoothd --noplugin=` |
+  | **WirePlumber** | `111e`/`111f` (HFP) | **`--noplugin` cannot touch it** -- it is an *external* `org.bluez.Profile1` over D-Bus. Needs `monitor.bluez = disabled`. |
+  | **WirePlumber** | `03b80e5a` (BLE MIDI) | a **separate** monitor: `monitor.bluez-midi = disabled` |
+
+  **Verify with the UUID list, never with `main.conf` or `hciconfig class`:**
+  `busctl get-property org.bluez /org/bluez/hci0 org.bluez.Adapter1 UUIDs`.
+  Want `1124` plus only `1200/1800/1801/180a/1844`, and class `0x00000540`
+  (Peripheral/Keyboard, **no service bits**).
+
+  What it cost on 2026-07-11: the adapter advertised `0x006c0540`, macOS filed the
+  Pi as a **speaker**, added it as an **audio output device**, and streamed A2DP at
+  a keyboard indefinitely -- ~400 failures/min, **76% packet retransmission** --
+  starving the radio shared by the MX Keys, MX Master and AirPods. Every Bluetooth
+  device on the Mac broke and the laptop ran hot. It presents as "my Bluetooth is
+  broken", not as "rpi-hub is broken".
+
+* **Trust the host on *connect*, not at startup.** A host that pairs after we boot
+  -- every first pairing, and every re-pair after clearing a stale bond -- is not
+  bonded when the startup pass runs, so it gets skipped and stays **untrusted
+  forever**. BlueZ then asks an agent to authorise each reconnect, finds none (we
+  are headless), and the link quietly stops coming back. By the time we hold a
+  link the host is necessarily bonded, so that is the only safe place to trust.
+
+* **`bluetoothctl` has no `unpair`.** The command is **`remove <mac>`**, and it is
+  the only thing that drops the link key -- `disconnect` does not. Clearing a bond
+  means removing it on **both** sides.
+
+* **Restarting `rpi-hub` does not reload plugins.** They belong to `bluetoothd`:
+  `systemctl restart bluetooth`, *then* `systemctl restart rpi-hub`.
+
 * **Only ever dial hosts pinned with `--host`.** The Pi's *paired* list is a junk
   drawer -- iPhone, BSBA-02 speaker, HY300Pro projector -- and dialling all of it
   is not merely noisy: **the iPhone accepts both L2CAP channels**, so it wins the
