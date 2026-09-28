@@ -217,6 +217,17 @@ impl HidPeripheral {
         Ok(HidLink { _ctrl: ctrl, intr, peer: ctrl_addr.addr })
     }
 
+    /// Tear down the ACL link to a host right now, rather than letting our
+    /// side of the socket close and leaving the host to notice on its own.
+    ///
+    /// Used when switching the active host: closing only our L2CAP sockets
+    /// leaves the underlying ACL link up until the host's own supervision
+    /// timeout expires (tens of seconds, longer if it is in sniff mode), and
+    /// during that window it may still believe it holds the keyboard.
+    pub async fn disconnect(&self, peer: bluer::Address) -> Result<()> {
+        self.adapter.device(peer)?.disconnect().await.context("disconnecting host")
+    }
+
     /// Dial out to a host we are already bonded with.
     ///
     /// This is the reconnect path: after the Mac sleeps or the Pi reboots, the

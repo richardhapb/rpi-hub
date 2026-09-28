@@ -93,6 +93,22 @@ fn swap_alt_gui(bits: u8) -> u8 {
     out
 }
 
+/// The digit row's evdev code -> its position, 0-indexed, in typing order
+/// (`1` first, `0` last -- HID's own digit order is the same oddity noted in
+/// [`usage`]).
+///
+/// Used to pick a pinned host out of `--host` order for the switch-host
+/// chord: this has nothing to do with the HID usage codes `usage` returns,
+/// it is purely "which slot did the user press".
+pub fn digit_index(code: u16) -> Option<usize> {
+    use evdev_codes::*;
+    Some(match code {
+        KEY_1 => 0, KEY_2 => 1, KEY_3 => 2, KEY_4 => 3, KEY_5 => 4,
+        KEY_6 => 5, KEY_7 => 6, KEY_8 => 7, KEY_9 => 8, KEY_0 => 9,
+        _ => return None,
+    })
+}
+
 /// Map one evdev key code to its HID equivalent.
 pub fn map(code: u16, layout: ModifierLayout) -> Mapped {
     if let Some(bit) = layout.bit(code) {
@@ -367,6 +383,16 @@ mod tests {
         // page. Neither has a boot-protocol equivalent, so both must be dropped
         // rather than mapped to something plausible-but-wrong.
         assert_eq!(map(0xFFFF, ModifierLayout::default()), Mapped::Ignored);
+    }
+
+    #[test]
+    fn digit_index_runs_in_typing_order_not_hid_order() {
+        // Unlike `usage`, this is "which key did you press", 0 first: no digit
+        // reordering, because it addresses a --host list, not a HID usage page.
+        assert_eq!(digit_index(KEY_1), Some(0));
+        assert_eq!(digit_index(KEY_9), Some(8));
+        assert_eq!(digit_index(KEY_0), Some(9));
+        assert_eq!(digit_index(KEY_A), None);
     }
 
     #[test]

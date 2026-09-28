@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 use crate::bt::{HidLink, HidPeripheral};
 use crate::input::{self, GrabbedDevice};
-use crate::keymap::ModifierLayout;
+use crate::keymap::{self, ModifierLayout};
 use crate::report::KeyboardState;
 
 #[derive(Parser, Debug)]
@@ -39,13 +39,18 @@ struct Args {
     /// Bluetooth address of a host to dial on reconnect, e.g. A8:8F:D9:2F:A1:67.
     ///
     /// Only these addresses are ever dialled. Pass it more than once for more
-    /// than one host; with none given we never knock, and only wait for a host
-    /// to open the channels.
+    /// than one host (e.g. two Macs); with none given we never knock, and only
+    /// wait for a host to open the channels.
     ///
     /// It is deliberately not "every paired device": a Pi accumulates pairings
     /// for speakers, phones and projectors, and at least an iPhone will happily
     /// accept both L2CAP channels -- taking the keyboard hostage on a link the
     /// Mac can never win.
+    ///
+    /// With more than one host pinned, Right Ctrl + Right Shift + a digit
+    /// switches the active link: 1 is the first --host given, 2 the second,
+    /// and so on. The current host is disconnected first, so only one ever
+    /// holds the keyboard.
     #[arg(long = "host")]
     hosts: Vec<bluer::Address>,
 
@@ -72,6 +77,10 @@ enum PumpEnd {
     /// nodes that come back on replug are *new* nodes (and often new eventN
     /// numbers), so the only honest move is to exit and be restarted onto them.
     InputGone,
+
+    /// The switch-host chord picked a different pinned host. Not a failure --
+    /// the caller disconnects the current host and dials this address next.
+    SwitchHost(bluer::Address),
 }
 
 pub async fn run() -> Result<()> {
@@ -149,8 +158,18 @@ pub async fn run() -> Result<()> {
 
     let mut state = KeyboardState::new(layout);
 
+    // Set by the switch-host chord: the next iteration dials this address
+    // specifically instead of racing accept() against every pinned host.
+    let mut switch_target: Option<bluer::Address> = None;
+
     loop {
-        let link = wait_for_host(&peripheral, &args.hosts).await?;
+        let link = match switch_target.take() {
+            Some(target) => {
+                println!("switching host: dialling {target}");
+                wait_for_host(&peripheral, std::slice::from_ref(&target)).await?
+            }
+            None => wait_for_host(&peripheral, &args.hosts).await?,
+        };
         println!("host connected: {}", link.peer());
 
         // Trust it now, not at startup. A host that pairs *after* we boot -- which
@@ -170,7 +189,7 @@ pub async fn run() -> Result<()> {
         state.release_all();
         link.send(&state.wire_report()).await.ok();
 
-        let end = pump(&mut rx, &link, &mut state, args.verbose).await;
+        let end = pump(&mut rx, &link, &mut state, &args.hosts, args.verbose).await;
 
         // Tell the host to let go of everything before the channel disappears.
         // Best-effort: if the link is already gone this send fails, and that is
@@ -191,6 +210,15 @@ pub async fn run() -> Result<()> {
             PumpEnd::HostGone(e) => {
                 eprintln!("link to {} lost: {e}", link.peer());
                 println!("host disconnected; waiting for reconnect");
+            }
+            PumpEnd::SwitchHost(target) => {
+                // Close our half now rather than let the old host find out on
+                // its own supervision timeout, tens of seconds from now, and
+                // spend that whole window thinking it still holds the keyboard.
+                if let Err(e) = peripheral.disconnect(link.peer()).await {
+                    eprintln!("warning: could not cleanly disconnect {}: {e}", link.peer());
+                }
+                switch_target = Some(target);
             }
         }
     }
@@ -232,14 +260,30 @@ async fn dial_any(peripheral: &HidPeripheral, hosts: &[bluer::Address]) -> Resul
     }
 }
 
-/// Forward key events to the host until the link breaks or the keyboard does.
+/// Forward key events to the host until the link breaks, the keyboard does, or
+/// the switch-host chord picks a different pinned host.
 async fn pump(
     rx: &mut mpsc::Receiver<KeyEvent>,
     link: &HidLink,
     state: &mut KeyboardState,
+    hosts: &[bluer::Address],
     verbose: bool,
 ) -> PumpEnd {
     while let Some(ev) = rx.recv().await {
+        // Right Ctrl + Right Shift + a digit is reserved for switching hosts,
+        // whether or not a host happens to be pinned at that slot -- it must
+        // never leak through as a keystroke, or `--host` order would silently
+        // change what typing Ctrl+Shift+3 does.
+        if ev.pressed
+            && let Some(idx) = keymap::digit_index(ev.code)
+            && state.is_host_switch_chord_held()
+        {
+            match hosts.get(idx) {
+                Some(&target) => return PumpEnd::SwitchHost(target),
+                None => continue,
+            }
+        }
+
         // `apply` returns false for events that do not change what the host can
         // see -- a repeated press of a held key, an unmapped key. Staying quiet
         // keeps the interrupt channel for things that matter.

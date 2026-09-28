@@ -13,7 +13,7 @@
 //! NKRO descriptor: hosts routinely mis-parse nonstandard report maps, and macOS
 //! is not a host worth gambling with.
 
-use crate::keymap::{self, Mapped, ModifierLayout};
+use crate::keymap::{self, modbit, Mapped, ModifierLayout};
 
 /// Number of key slots in a boot-protocol report.
 pub const KEY_SLOTS: usize = 6;
@@ -114,6 +114,14 @@ impl KeyboardState {
         self.modifiers = 0;
         self.keys = [0; KEY_SLOTS];
         changed
+    }
+
+    /// Whether the switch-host chord's modifier half (Right Ctrl + Right
+    /// Shift) is currently held. Both sides are never remapped -- see
+    /// [`ModifierLayout`] -- so this reads the same regardless of layout.
+    pub fn is_host_switch_chord_held(&self) -> bool {
+        const CHORD: u8 = modbit::R_CTRL | modbit::R_SHIFT;
+        self.modifiers & CHORD == CHORD
     }
 
     /// The bare 8-byte boot report.
@@ -257,5 +265,27 @@ mod tests {
         let mut k = kb();
         assert!(!k.apply(0xFFFF, true));
         assert_eq!(k.report(), [0; 8]);
+    }
+
+    #[test]
+    fn host_switch_chord_needs_both_right_ctrl_and_right_shift() {
+        let mut k = kb();
+        assert!(!k.is_host_switch_chord_held());
+        k.apply(KEY_RIGHTCTRL, true);
+        assert!(!k.is_host_switch_chord_held(), "one half of the chord is not the chord");
+        k.apply(KEY_RIGHTSHIFT, true);
+        assert!(k.is_host_switch_chord_held());
+        k.apply(KEY_RIGHTCTRL, false);
+        assert!(!k.is_host_switch_chord_held());
+    }
+
+    #[test]
+    fn host_switch_chord_ignores_the_left_side() {
+        // Left Ctrl+Shift is ordinary typing (e.g. text selection); only the
+        // right-side pair is reserved, so it must never fire by accident.
+        let mut k = kb();
+        k.apply(KEY_LEFTCTRL, true);
+        k.apply(KEY_LEFTSHIFT, true);
+        assert!(!k.is_host_switch_chord_held());
     }
 }

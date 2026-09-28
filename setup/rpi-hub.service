@@ -16,10 +16,14 @@ Type=simple
 User=root
 SupplementaryGroups=input
 
-# --host pins the one machine we dial on reconnect ("MacBook Air de Richard").
+# --host pins the machines we dial on reconnect ("MacBook Air de Richard").
 # Without it we would knock on every *paired* device, and the Pi's paired list
 # also holds an iPhone, a speaker and a projector -- the iPhone accepts both
 # L2CAP channels, so it wins the race and swallows the keyboard.
+#
+# Pass --host again to pin a second Mac (pair it first): Right Ctrl + Right
+# Shift + 2 then switches the active link to it, 1 switches back. See
+# CLAUDE.md 4.6.
 ExecStart=/usr/local/bin/rpi-hub \
   --device /dev/input/by-id/usb-SINO_WEALTH_Gaming_Keyboard-event-kbd \
   --device /dev/input/by-id/usb-SINO_WEALTH_Gaming_Keyboard-event-if01 \
