@@ -283,6 +283,38 @@ Deliberately **unmapped** (returns `Mapped::Ignored`, occupies no slot):
   most likely next feature.
 * **Fn** -- swallowed by the keyboard's own firmware; never reaches evdev at all.
 
+### 4.6 Switching between multiple pinned hosts
+
+Pass `--host` more than once (e.g. one Mac and another Mac) and the wired
+keyboard can drive either, one at a time. Only one L2CAP link is ever held --
+this is not multiplexing, it is the same "one active host" model a real
+Bluetooth keyboard has, just with more than one remembered pairing.
+
+**Trigger: Right Ctrl + Right Shift + a digit.** `1` selects the first
+`--host` given, `2` the second, and so on (`keymap::digit_index`). Chosen over
+a GPIO button or an SSH command because it needs no extra hardware and works
+from wherever the keyboard already is. Right Ctrl/Right Shift specifically
+because [4.4](#44-the-modifier-mapping----richards-explicit-requirement) never
+remaps them, so the chord means the same thing regardless of
+`--literal-modifiers`, and because it doesn't collide with anything the left
+side is used for.
+
+The combo is **reserved outright**, not just "usually free": pressing a digit
+while Right Ctrl+Right Shift are down never reaches the host, even for a digit
+with no `--host` pinned at that slot (see `pump` in `app.rs`). The alternative
+-- only swallowing the digit when it maps to a real host -- would mean the
+same physical chord sometimes types "3" and sometimes doesn't, depending on
+how many `--host` flags happen to be configured. That is a worse surprise than
+an inert chord.
+
+**Switching disconnects the old host explicitly.** Just closing our two L2CAP
+sockets and dialling the next host leaves the *ACL link* (the underlying
+Bluetooth connection, one layer below L2CAP) up until the old host's own
+supervision timeout expires -- tens of seconds, longer if it negotiated sniff
+mode (3.3). Until then the old Mac can believe it still holds the keyboard.
+`HidPeripheral::disconnect` calls BlueZ's `Device1.Disconnect` to tear the ACL
+link down immediately instead of waiting that out.
+
 ---
 
 ## 5. The hardware, concretely
@@ -443,8 +475,9 @@ Not started, roughly in order of value:
 4. **LED / caps-lock output reports.** The descriptor already declares the LED
    output report, but we never read from the control channel, so the Mac's caps
    lock state never lights the keyboard's LED.
-5. **Multi-host.** The Pi stops being discoverable once connected. Switching
-   between Mac/iPad would need bthidhub-style multiplexing.
+
+Done, not yet field-tested against real hardware (see 9): switching between
+multiple pinned hosts, [4.6](#46-switching-between-multiple-pinned-hosts).
 
 ## 9. Unverified
 
@@ -455,3 +488,9 @@ Not started, roughly in order of value:
   expected to work (it is a real HID keyboard) but was **not tested**.
 * Reconnect after a **Mac sleep/wake** cycle -- the dial-out path exists and works
   after a *service* restart, but a full Mac sleep was not exercised.
+* **The switch-host chord (4.6)** was implemented and unit-tests the pure
+  pieces (`digit_index`, `is_host_switch_chord_held`), but a second Mac has not
+  yet actually been paired and switched to. Confirm before trusting: does
+  `Device1.Disconnect` actually drop the old Mac's Bluetooth menu item
+  promptly, and does the new Mac connect within a few seconds rather than
+  waiting out `dial_any`'s backoff.
